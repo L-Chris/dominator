@@ -42,7 +42,7 @@ chrome.runtime.onMessage.addListener(
     if (msg.type === 'quickAnalyze') {
       postQuickAnalyze(msg.payload)
         .then((data) => sendResponse({ ok: true, data }))
-        .catch((err) => sendResponse({ ok: false, error: String(err) }))
+        .catch((err) => sendResponse({ ok: false, error: String(err), status: getErrorStatus(err) }))
       return true
     }
 
@@ -161,10 +161,20 @@ async function postQuickAnalyze(payload: unknown): Promise<unknown> {
 
   if (!response.ok) {
     const text = await response.text().catch(() => '')
-    throw new Error(`Backend returned ${response.status}: ${text.slice(0, 300)}`)
+    throw toStatusError(`Backend returned ${response.status}: ${text.slice(0, 300)}`, response.status)
   }
 
   return response.json()
+}
+
+function toStatusError(message: string, status: number): Error & { status?: number } {
+  const error = new Error(message) as Error & { status?: number }
+  error.status = status
+  return error
+}
+
+function getErrorStatus(err: unknown): number | undefined {
+  return err instanceof Error ? (err as Error & { status?: number }).status : undefined
 }
 
 async function syncSidePanelAvailability() {

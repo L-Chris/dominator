@@ -136,7 +136,7 @@ export type MessageToBackground =
 
 export type MessageResponse =
   | { ok: true; data: unknown }
-  | { ok: false; error: string }
+  | { ok: false; error: string; status?: number }
 
 export type MessageToContent =
   | { type: 'fetchZhihuInPage'; url: string; referer?: string }

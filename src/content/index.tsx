@@ -5,6 +5,18 @@ import { startDevReloader } from '@/devReload'
 startDevReloader('content')
 
 type ChipStatus = 'idle' | 'loading' | 'done' | 'error'
+type QuickAnalysisResponse = {
+  success: boolean
+  data?: Array<{
+    platformUserId: string
+    riskScore: number
+    riskLevel: string
+    tags?: string[]
+    dimensions?: SimpleAnalysisResult['dimensions']
+    cached?: boolean
+  }>
+}
+type StatusError = Error & { status?: number }
 
 const resultCache = new Map<string, AnalysisJsonResult>()
 const simpleResultCache = new Map<string, SimpleAnalysisResult>()
@@ -61,6 +73,27 @@ async function runSimpleAnalysisBatch() {
   })
 
   try {
+    try {
+      const cachedData = await withTimeout(
+        quickAnalyzeInBackground({
+          platform: 'zhihu',
+          users: targets.map((target) => ({
+            platformUserId: target.userId,
+            userName: target.userName,
+          })),
+        }),
+        SIMPLE_FETCH_TIMEOUT_MS,
+        'Quick analysis backend request timed out'
+      )
+      if (needsQuickAnalysisUpload(cachedData, targets)) {
+        throw toStatusError('Quick analysis cache miss', 404)
+      }
+      applyQuickAnalysisData(cachedData, targets)
+      return
+    } catch (err) {
+      if (!isStatusError(err, 404)) throw err
+    }
+
     const samples = await Promise.all(
       targets.map(async (target) => ({
         target,
@@ -74,7 +107,7 @@ async function runSimpleAnalysisBatch() {
       }))
     )
 
-    const response = await withTimeout(
+    const data = await withTimeout(
       quickAnalyzeInBackground({
         platform: 'zhihu',
         users: samples.map(({ target, answers }) => ({
@@ -87,25 +120,7 @@ async function runSimpleAnalysisBatch() {
       'Quick analysis backend request timed out'
     )
 
-    if (!response.ok) throw new Error(`Backend returned ${response.status}`)
-
-    const data = await response.json() as { success: boolean; data?: Array<{ platformUserId: string; riskScore: number; riskLevel: string; tags?: string[]; dimensions?: SimpleAnalysisResult['dimensions'] }> }
-    if (!data.success || !data.data) throw new Error('Backend returned invalid result')
-
-    data.data.forEach((result, index) => {
-      const target = targets.find((item) => item.userId === result.platformUserId) || targets[index]
-      if (!target) return
-      const normalized: SimpleAnalysisResult = {
-        user_id: target.userId,
-        risk_score: normalizeRiskScore(result.riskScore),
-        dimensions: normalizeSimpleDimensions(result.dimensions),
-        tags: buildTagsFromDimensions(normalizeSimpleDimensions(result.dimensions), normalizeRiskScore(result.riskScore)),
-      }
-      if (normalized.tags.length === 0) return
-      simpleResultCache.set(target.userId, normalized)
-      simpleRetryCounts.delete(target.userId)
-      updateSimpleTags(target.userId, normalized)
-    })
+    applyQuickAnalysisData(data, targets)
   } catch (err) {
     console.warn('[Dominator] quick analysis failed', err)
     targets.forEach((target) => {
@@ -122,6 +137,39 @@ async function runSimpleAnalysisBatch() {
     simpleAnalyzing = false
     if (simpleQueue.size > 0) scheduleSimpleAnalysis()
   }
+}
+
+function applyQuickAnalysisData(data: QuickAnalysisResponse, targets: AnalysisTarget[]) {
+  if (!data.success || !data.data) throw new Error('Backend returned invalid result')
+
+  data.data.forEach((result, index) => {
+    const target = targets.find((item) => item.userId === result.platformUserId) || targets[index]
+    if (!target) return
+
+    const riskScore = normalizeRiskScore(result.riskScore)
+    const dimensions = normalizeSimpleDimensions(result.dimensions)
+    const tags = Array.isArray(result.tags)
+      ? result.tags.map(String).filter(Boolean)
+      : buildTagsFromDimensions(dimensions, riskScore)
+    const normalized: SimpleAnalysisResult = {
+      user_id: target.userId,
+      risk_score: riskScore,
+      dimensions,
+      tags: tags.length > 0 ? tags : buildTagsFromDimensions(dimensions, riskScore),
+    }
+
+    simpleResultCache.set(target.userId, normalized)
+    simpleRetryCounts.delete(target.userId)
+    updateSimpleTags(target.userId, normalized)
+  })
+}
+
+function needsQuickAnalysisUpload(data: QuickAnalysisResponse, targets: AnalysisTarget[]) {
+  if (!data.success || !data.data) return true
+  return targets.some((target) => {
+    const result = data.data?.find((item) => item.platformUserId === target.userId)
+    return !result || result.cached === false
+  })
 }
 
 function pickSimpleTargets(): AnalysisTarget[] {
@@ -166,7 +214,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
   })
 }
 
-function quickAnalyzeInBackground(payload: unknown): Promise<Response> {
+function quickAnalyzeInBackground(payload: unknown): Promise<QuickAnalysisResponse> {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({ type: 'quickAnalyze', payload }, (res) => {
       const runtimeError = chrome.runtime.lastError?.message
@@ -176,16 +224,23 @@ function quickAnalyzeInBackground(payload: unknown): Promise<Response> {
       }
 
       if (!res?.ok) {
-        reject(new Error(res?.error || 'Quick analysis request failed'))
+        reject(toStatusError(res?.error || 'Quick analysis request failed', res?.status))
         return
       }
 
-      resolve(new Response(JSON.stringify(res.data), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }))
+      resolve(res.data as QuickAnalysisResponse)
     })
   })
+}
+
+function toStatusError(message: string, status?: number): StatusError {
+  const error = new Error(message) as StatusError
+  error.status = status
+  return error
+}
+
+function isStatusError(err: unknown, status: number): boolean {
+  return err instanceof Error && (err as StatusError).status === status
 }
 
 function isElementInViewport(element: HTMLElement): boolean {
