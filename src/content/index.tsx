@@ -8,9 +8,9 @@ type ChipStatus = 'idle' | 'loading' | 'done' | 'error'
 type QuickAnalysisResponse = {
   success: boolean
   data?: Array<{
-    platformUserId: string
-    riskScore: number
-    riskLevel: string
+    platform_user_id: string
+    risk_score: number
+    risk_level: string
     tags?: string[]
     dimensions?: SimpleAnalysisResult['dimensions']
     cached?: boolean
@@ -77,10 +77,10 @@ async function runSimpleAnalysisBatch() {
       const cachedData = await withTimeout(
         quickAnalyzeInBackground({
           platform: 'zhihu',
-          cacheOnly: true,
+          cache_only: true,
           users: targets.map((target) => ({
-            platformUserId: target.userId,
-            userName: target.userName,
+            platform_user_id: target.userId,
+            user_name: target.userName,
           })),
         }),
         SIMPLE_FETCH_TIMEOUT_MS,
@@ -111,10 +111,10 @@ async function runSimpleAnalysisBatch() {
     const data = await withTimeout(
       quickAnalyzeInBackground({
         platform: 'zhihu',
-        cacheOnly: false,
+        cache_only: false,
         users: samples.map(({ target, answers }) => ({
-          platformUserId: target.userId,
-          userName: target.userName,
+          platform_user_id: target.userId,
+          user_name: target.userName,
           answers,
         })),
       }),
@@ -145,10 +145,10 @@ function applyQuickAnalysisData(data: QuickAnalysisResponse, targets: AnalysisTa
   if (!data.success || !data.data) throw new Error('Backend returned invalid result')
 
   data.data.forEach((result, index) => {
-    const target = targets.find((item) => item.userId === result.platformUserId) || targets[index]
+    const target = targets.find((item) => item.userId === result.platform_user_id) || targets[index]
     if (!target) return
 
-    const riskScore = normalizeRiskScore(result.riskScore)
+    const riskScore = normalizeRiskScore(result.risk_score)
     const dimensions = normalizeSimpleDimensions(result.dimensions)
     const tags = Array.isArray(result.tags)
       ? result.tags.map(String).filter(Boolean)
@@ -169,7 +169,7 @@ function applyQuickAnalysisData(data: QuickAnalysisResponse, targets: AnalysisTa
 function needsQuickAnalysisUpload(data: QuickAnalysisResponse, targets: AnalysisTarget[]) {
   if (!data.success || !data.data) return true
   return targets.some((target) => {
-    const result = data.data?.find((item) => item.platformUserId === target.userId)
+    const result = data.data?.find((item) => item.platform_user_id === target.userId)
     return !result || result.cached === false
   })
 }

@@ -98,14 +98,14 @@ export function useAnalysis() {
         success: boolean
         cached?: boolean
         data?: {
-          riskLevel: string
-          totalScore: number
+          risk_level: string
+          total_score: number
           summary: string
           tags: unknown
           dimensions: unknown
           evidence: unknown
-          articleCount?: number
-          answerCount?: number
+          article_count?: number
+          answer_count?: number
         }
       }
 
@@ -114,15 +114,15 @@ export function useAnalysis() {
       }
 
       const result: AnalysisJsonResult = {
-        risk_level: json.data.riskLevel as AnalysisJsonResult['risk_level'],
-        total_score: json.data.totalScore,
+        risk_level: json.data.risk_level as AnalysisJsonResult['risk_level'],
+        total_score: json.data.total_score,
         summary: json.data.summary,
         tags: Array.isArray(json.data.tags) ? json.data.tags.map(String) : [],
         dimensions: json.data.dimensions as AnalysisJsonResult['dimensions'],
         evidence: Array.isArray(json.data.evidence) ? json.data.evidence.map(String) : [],
       }
 
-      return { result, cached: json.cached === true, articleCount: json.data.articleCount ?? 0, answerCount: json.data.answerCount ?? 0 }
+      return { result, cached: json.cached === true, articleCount: json.data.article_count ?? 0, answerCount: json.data.answer_count ?? 0 }
     }
 
     const finishWith = (result: AnalysisJsonResult, articleCount: number, answerCount: number) => {
@@ -136,9 +136,9 @@ export function useAnalysis() {
       try {
         const { result, articleCount, answerCount } = await callBackend({
           platform: 'zhihu',
-          platformUserId: analysisTarget.userId,
-          userName: analysisTarget.userName,
-          cacheOnly: true,
+          platform_user_id: analysisTarget.userId,
+          user_name: analysisTarget.userName,
+          cache_only: true,
         })
         finishWith(result, articleCount, answerCount)
         return
@@ -166,9 +166,9 @@ export function useAnalysis() {
       // Step 3: Send data and analyze
       const { result } = await callBackend({
         platform: 'zhihu',
-        platformUserId: analysisTarget.userId,
-        userName: analysisTarget.userName,
-        cacheOnly: false,
+        platform_user_id: analysisTarget.userId,
+        user_name: analysisTarget.userName,
+        cache_only: false,
         articles,
         answers,
       })
