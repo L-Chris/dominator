@@ -1,5 +1,4 @@
 import { fetchAnswers, getUserId, getUserName, getUserIdFromHref, summarizeAnswers } from '@/api/zhihu'
-import { SERVICE_URL } from '@/api/storage'
 import type { AnalysisJsonResult, AnalysisTarget, RiskLevel, SimpleAnalysisResult } from '@/types'
 import { startDevReloader } from '@/devReload'
 
@@ -11,20 +10,35 @@ const resultCache = new Map<string, AnalysisJsonResult>()
 const simpleResultCache = new Map<string, SimpleAnalysisResult>()
 const simpleQueue = new Map<string, AnalysisTarget>()
 const simpleInFlight = new Set<string>()
+const simpleRetryCounts = new Map<string, number>()
 let simpleAnalyzeTimer: number | null = null
 let simpleAnalyzing = false
 const SIMPLE_BATCH_SIZE = 1
+const SIMPLE_MAX_RETRIES = 2
+const SIMPLE_AUTO_ANALYSIS_ENABLED = import.meta.env.VITE_ZHIHU_AUTO_QUICK_ANALYSIS !== 'false'
+const SIMPLE_AUTO_START_DELAY_MS = getPositiveIntegerEnv('VITE_ZHIHU_AUTO_QUICK_ANALYSIS_DELAY_MS', 2000)
+const SIMPLE_FETCH_TIMEOUT_MS = getPositiveIntegerEnv('VITE_ZHIHU_QUICK_ANALYSIS_TIMEOUT_MS', 12000)
 
 chrome.runtime.sendMessage({ type: 'enableSidePanelForCurrentTab' }).catch(() => undefined)
 
 function getQuickAnalysisMaxPages() {
-  const configured = Number(import.meta.env.VITE_ZHIHU_QUICK_ANALYSIS_MAX_PAGES || 1)
-  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 1
+  return getPositiveIntegerEnv('VITE_ZHIHU_QUICK_ANALYSIS_MAX_PAGES', 1)
+}
+
+function getPositiveIntegerEnv(key: string, fallback: number) {
+  const configured = Number(import.meta.env[key] || fallback)
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : fallback
 }
 
 function enqueueSimpleAnalysis(target: AnalysisTarget) {
+  if (!SIMPLE_AUTO_ANALYSIS_ENABLED) return
+  queueSimpleAnalysis(target)
+}
+
+function queueSimpleAnalysis(target: AnalysisTarget) {
   if (simpleResultCache.has(target.userId) || simpleInFlight.has(target.userId) || simpleQueue.has(target.userId)) return
   simpleQueue.set(target.userId, target)
+  setSimpleTagsStatus(target.userId, 'loading')
   scheduleSimpleAnalysis()
 }
 
@@ -50,15 +64,18 @@ async function runSimpleAnalysisBatch() {
     const samples = await Promise.all(
       targets.map(async (target) => ({
         target,
-        answers: summarizeAnswers(await fetchAnswers(3, target.userId)),
+        answers: summarizeAnswers(
+          await withTimeout(
+            fetchAnswers(getQuickAnalysisMaxPages(), target.userId),
+            SIMPLE_FETCH_TIMEOUT_MS,
+            `Quick analysis data fetch timed out for ${target.userId}`
+          )
+        ),
       }))
     )
 
-    const serviceUrl = SERVICE_URL.replace(/\/+$/, '')
-    const response = await fetch(`${serviceUrl}/api/analyze/quick`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const response = await withTimeout(
+      quickAnalyzeInBackground({
         platform: 'zhihu',
         users: samples.map(({ target, answers }) => ({
           platformUserId: target.userId,
@@ -66,7 +83,9 @@ async function runSimpleAnalysisBatch() {
           answers,
         })),
       }),
-    })
+      SIMPLE_FETCH_TIMEOUT_MS,
+      'Quick analysis backend request timed out'
+    )
 
     if (!response.ok) throw new Error(`Backend returned ${response.status}`)
 
@@ -84,7 +103,19 @@ async function runSimpleAnalysisBatch() {
       }
       if (normalized.tags.length === 0) return
       simpleResultCache.set(target.userId, normalized)
+      simpleRetryCounts.delete(target.userId)
       updateSimpleTags(target.userId, normalized)
+    })
+  } catch (err) {
+    console.warn('[Dominator] quick analysis failed', err)
+    targets.forEach((target) => {
+      const retries = simpleRetryCounts.get(target.userId) || 0
+      if (retries >= SIMPLE_MAX_RETRIES) {
+        setSimpleTagsStatus(target.userId, 'error')
+        return
+      }
+      simpleRetryCounts.set(target.userId, retries + 1)
+      queueSimpleAnalysis(target)
     })
   } finally {
     targets.forEach((target) => simpleInFlight.delete(target.userId))
@@ -117,6 +148,56 @@ function getTargetViewportPriority(userId: string): number {
 
   if (visibleRatio <= 0) return Math.max(0, 1000 - distanceToCenter)
   return 100000 + visibleRatio * 10000 - distanceToCenter
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), timeoutMs)
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        window.clearTimeout(timer)
+        reject(error)
+      }
+    )
+  })
+}
+
+function quickAnalyzeInBackground(payload: unknown): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: 'quickAnalyze', payload }, (res) => {
+      const runtimeError = chrome.runtime.lastError?.message
+      if (runtimeError) {
+        reject(new Error(runtimeError))
+        return
+      }
+
+      if (!res?.ok) {
+        reject(new Error(res?.error || 'Quick analysis request failed'))
+        return
+      }
+
+      resolve(new Response(JSON.stringify(res.data), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    })
+  })
+}
+
+function isElementInViewport(element: HTMLElement): boolean {
+  const host = element.closest<HTMLElement>('.AnswerItem, .List-item, .ContentItem, .AuthorInfo, .ProfileHeader') || element
+  const rect = host.getBoundingClientRect()
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 1
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1
+  const visibleTop = Math.max(rect.top, 0)
+  const visibleBottom = Math.min(rect.bottom, viewportHeight)
+  const visibleLeft = Math.max(rect.left, 0)
+  const visibleRight = Math.min(rect.right, viewportWidth)
+  return visibleBottom > visibleTop && visibleRight > visibleLeft
 }
 
 function buildTagsFromDimensions(dimensions: SimpleAnalysisResult['dimensions'], riskScore: number): string[] {
@@ -514,10 +595,13 @@ function ensureProfileAvatarTags(userId: string, result?: AnalysisJsonResult) {
   else {
     const simpleResult = simpleResultCache.get(userId)
     if (simpleResult) updateSimpleTags(userId, simpleResult)
+    else enqueueSimpleAnalysis({ userId, userName: getUserName() })
   }
 }
 
 function normalizeAuthorHead(authorHead: HTMLElement) {
+  if (!isElementInViewport(authorHead)) return
+
   const nameWrap = authorHead.querySelector<HTMLElement>('.AuthorInfo-name')
   if (!nameWrap) return
 
@@ -563,9 +647,6 @@ function normalizeAuthorHead(authorHead: HTMLElement) {
 }
 
 function injectProfileButton() {
-  const btnGroup = document.querySelector('.ProfileHeader-buttons')
-  if (!btnGroup) return
-
   ensureStyle()
   const userId = getUserId() || ''
   if (!userId) return
@@ -607,7 +688,9 @@ function injectQuestionAuthorTags() {
 
   ensureStyle()
 
-  document.querySelectorAll<HTMLElement>('.AuthorInfo-head').forEach(normalizeAuthorHead)
+  Array.from(document.querySelectorAll<HTMLElement>('.AuthorInfo-head'))
+    .filter(isElementInViewport)
+    .forEach(normalizeAuthorHead)
 }
 
 function inject() {
@@ -618,12 +701,41 @@ function inject() {
 let injectTimer: number | null = null
 let scrollScheduleTimer: number | null = null
 
-function scheduleInject() {
+function shouldReactToMutations(mutations: MutationRecord[]): boolean {
+  return mutations.some((mutation) => {
+    const nodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)]
+    return nodes.some((node) => {
+      if (node instanceof HTMLElement) {
+        return !node.matches('.za-analysis-row, .za-avatar-tags, .za-user-tag, .za-avatar-tag')
+          && !node.closest('.za-analysis-row, .za-avatar-tags, .za-user-tag')
+      }
+
+      const parent = node.parentElement
+      return parent ? !parent.closest('.za-analysis-row, .za-avatar-tags, .za-user-tag') : false
+    })
+  })
+}
+
+function setSimpleTagsStatus(userId: string, status: 'loading' | 'error') {
+  document.querySelectorAll<HTMLElement>(`.za-avatar-tags[data-user-id="${CSS.escape(userId)}"]`).forEach((container) => {
+    container.replaceChildren()
+    container.dataset.status = status
+
+    const tag = document.createElement('span')
+    tag.className = 'za-avatar-tag'
+    tag.textContent = status === 'loading' ? '简析中' : '简析失败'
+    tag.title = status === 'loading' ? '正在进行简易分析' : '简易分析失败'
+    container.appendChild(tag)
+  })
+}
+
+function scheduleInject(mutations?: MutationRecord[]) {
+  if (mutations && !shouldReactToMutations(mutations)) return
   if (injectTimer !== null) return
   injectTimer = window.setTimeout(() => {
     injectTimer = null
     inject()
-  }, 120)
+  }, 400)
 }
 
 function scheduleVisibleQueueAnalysis() {
@@ -634,10 +746,13 @@ function scheduleVisibleQueueAnalysis() {
   }, 150)
 }
 
-const observer = new MutationObserver(() => scheduleInject())
+const observer = new MutationObserver((mutations) => scheduleInject(mutations))
 observer.observe(document.body, { childList: true, subtree: true })
-window.addEventListener('scroll', scheduleVisibleQueueAnalysis, { passive: true })
-inject()
+window.addEventListener('scroll', () => {
+  scheduleInject()
+  scheduleVisibleQueueAnalysis()
+}, { passive: true })
+window.setTimeout(inject, SIMPLE_AUTO_START_DELAY_MS)
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'fetchZhihuInPage') {

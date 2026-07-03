@@ -7,6 +7,7 @@
   "host_permissions": [
     "https://www.zhihu.com/*",
     "https://api.zhihu.com/*",
+    "http://dominator.home.com/*",
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],

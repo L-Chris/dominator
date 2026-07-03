@@ -126,9 +126,11 @@ export interface AnalysisResult {
 export type MessageToBackground =
   | { type: 'fetchZhihu'; url: string; referer?: string }
   | { type: 'fetchZhihuFromTab'; url: string; referer?: string; tabId?: number }
+  | { type: 'quickAnalyze'; payload: unknown }
   | { type: 'enableSidePanelForCurrentTab' }
   | { type: 'openSidePanel'; target: AnalysisTarget; maxPages?: number }
   | { type: 'getSidePanelTarget' }
+  | { type: 'ackSidePanelTarget'; requestId: string }
   | { type: 'sidePanelAnalysisComplete'; target: AnalysisTarget; result: AnalysisJsonResult; tabId?: number }
   | { type: 'sidePanelAnalysisError'; target: AnalysisTarget; error: string; tabId?: number }
 

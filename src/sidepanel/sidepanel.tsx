@@ -19,6 +19,10 @@ function getSidePanelTarget(): Promise<SidePanelAnalysisRequest | null> {
   })
 }
 
+function ackSidePanelTarget(requestId: string) {
+  chrome.runtime.sendMessage({ type: 'ackSidePanelTarget', requestId }).catch(() => undefined)
+}
+
 const SidePanel = () => {
   const { loading, step, error, result, articleCount, answerCount, target, analyze } = useAnalysis()
   const [empty, setEmpty] = useState(true)
@@ -36,6 +40,7 @@ const SidePanel = () => {
     const key = request.requestId
     activeKeyRef.current = key
     setEmpty(false)
+    ackSidePanelTarget(request.requestId)
 
     analyze(request.target, {
       maxPages: request.maxPages,

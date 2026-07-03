@@ -1,5 +1,6 @@
 import type { MessageToBackground, MessageResponse, SidePanelAnalysisRequest } from '@/types'
 import { startDevReloader } from '@/devReload'
+import { SERVICE_URL } from '@/api/storage'
 
 startDevReloader('background')
 
@@ -33,6 +34,13 @@ chrome.runtime.onMessage.addListener(
           }
           return r.json()
         })
+        .then((data) => sendResponse({ ok: true, data }))
+        .catch((err) => sendResponse({ ok: false, error: String(err) }))
+      return true
+    }
+
+    if (msg.type === 'quickAnalyze') {
+      postQuickAnalyze(msg.payload)
         .then((data) => sendResponse({ ok: true, data }))
         .catch((err) => sendResponse({ ok: false, error: String(err) }))
       return true
@@ -102,8 +110,15 @@ chrome.runtime.onMessage.addListener(
 
     if (msg.type === 'getSidePanelTarget') {
       const request = sidePanelRequest
-      sidePanelRequest = null
       sendResponse({ ok: true, data: request })
+      return false
+    }
+
+    if (msg.type === 'ackSidePanelTarget') {
+      if (sidePanelRequest?.requestId === msg.requestId) {
+        sidePanelRequest = null
+      }
+      sendResponse({ ok: true, data: null })
       return false
     }
 
@@ -134,6 +149,22 @@ function fetchZhihu(url: string, referer?: string): Promise<Response> {
       'x-requested-with': 'fetch',
     },
   })
+}
+
+async function postQuickAnalyze(payload: unknown): Promise<unknown> {
+  const serviceUrl = SERVICE_URL.replace(/\/+$/, '')
+  const response = await fetch(`${serviceUrl}/api/analyze/quick`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(`Backend returned ${response.status}: ${text.slice(0, 300)}`)
+  }
+
+  return response.json()
 }
 
 async function syncSidePanelAvailability() {
