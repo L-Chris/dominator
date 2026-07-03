@@ -1,7 +1,7 @@
 import type { LLMConfig } from '@/types'
 
 const DEFAULT_CONFIG: LLMConfig = {
-  serviceUrl: import.meta.env.VITE_SERVICE_URL || 'http://localhost:4178',
+  serviceUrl: import.meta.env.VITE_SERVICE_URL || 'http://dominator.home.com',
 }
 
 function withDefault(value: string | undefined, fallback: string): string {
