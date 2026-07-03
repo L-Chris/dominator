@@ -62,8 +62,9 @@ async function runSimpleAnalysisBatch() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        platform: 'zhihu',
         users: samples.map(({ target, answers }) => ({
-          userId: target.userId,
+          platformUserId: target.userId,
           userName: target.userName,
           answers,
         })),
@@ -72,11 +73,11 @@ async function runSimpleAnalysisBatch() {
 
     if (!response.ok) throw new Error(`Backend returned ${response.status}`)
 
-    const data = await response.json() as { success: boolean; data?: Array<{ userId: string; riskScore: number; riskLevel: string; tags?: string[]; dimensions?: SimpleAnalysisResult['dimensions'] }> }
+    const data = await response.json() as { success: boolean; data?: Array<{ platformUserId: string; riskScore: number; riskLevel: string; tags?: string[]; dimensions?: SimpleAnalysisResult['dimensions'] }> }
     if (!data.success || !data.data) throw new Error('Backend returned invalid result')
 
     data.data.forEach((result, index) => {
-      const target = targets.find((item) => item.userId === result.userId) || targets[index]
+      const target = targets.find((item) => item.userId === result.platformUserId) || targets[index]
       if (!target) return
       const normalized: SimpleAnalysisResult = {
         user_id: target.userId,

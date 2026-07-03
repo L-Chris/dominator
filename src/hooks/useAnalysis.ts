@@ -100,12 +100,13 @@ export function useAnalysis() {
       const response = await fetch(`${serviceUrl}/api/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          platformUserId: analysisTarget.userId,
-          userName: analysisTarget.userName,
-          articles,
-          answers,
-        }),
+      body: JSON.stringify({
+        platform: 'zhihu',
+        platformUserId: analysisTarget.userId,
+        userName: analysisTarget.userName,
+        articles,
+        answers,
+      }),
       })
 
       if (!response.ok) {
