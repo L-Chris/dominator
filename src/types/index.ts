@@ -1,7 +1,3 @@
-export interface LLMConfig {
-  serviceUrl: string
-}
-
 export type RiskLevel = '低风险' | '中风险' | '高风险' | '极高风险' | '未知'
 
 export interface AnalysisJsonResult {

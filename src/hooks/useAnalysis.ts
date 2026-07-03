@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
 import { fetchArticles, fetchAnswers, getUserName, getUserId } from '@/api/zhihu'
-import { getConfig } from '@/api/storage'
+import { SERVICE_URL } from '@/api/storage'
 import type { AnalysisJsonResult, AnalysisTarget } from '@/types'
 
 interface AnalyzeOptions {
@@ -91,22 +91,17 @@ export function useAnalysis() {
         step: '正在发送数据到后端分析...',
       }))
 
-      const config = await getConfig()
-      if (!config.serviceUrl) {
-        throw new Error('请先在插件设置页面配置后端服务地址')
-      }
-
-      const serviceUrl = config.serviceUrl.replace(/\/+$/, '')
+      const serviceUrl = SERVICE_URL.replace(/\/+$/, '')
       const response = await fetch(`${serviceUrl}/api/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        platform: 'zhihu',
-        platformUserId: analysisTarget.userId,
-        userName: analysisTarget.userName,
-        articles,
-        answers,
-      }),
+        body: JSON.stringify({
+          platform: 'zhihu',
+          platformUserId: analysisTarget.userId,
+          userName: analysisTarget.userName,
+          articles,
+          answers,
+        }),
       })
 
       if (!response.ok) {

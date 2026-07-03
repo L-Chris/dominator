@@ -1,5 +1,5 @@
 import { fetchAnswers, getUserId, getUserName, getUserIdFromHref, summarizeAnswers } from '@/api/zhihu'
-import { getConfig } from '@/api/storage'
+import { SERVICE_URL } from '@/api/storage'
 import type { AnalysisJsonResult, AnalysisTarget, RiskLevel, SimpleAnalysisResult } from '@/types'
 import { startDevReloader } from '@/devReload'
 
@@ -47,9 +47,6 @@ async function runSimpleAnalysisBatch() {
   })
 
   try {
-    const config = await getConfig()
-    if (!config.serviceUrl) return
-
     const samples = await Promise.all(
       targets.map(async (target) => ({
         target,
@@ -57,7 +54,7 @@ async function runSimpleAnalysisBatch() {
       }))
     )
 
-    const serviceUrl = config.serviceUrl.replace(/\/+$/, '')
+    const serviceUrl = SERVICE_URL.replace(/\/+$/, '')
     const response = await fetch(`${serviceUrl}/api/analyze/quick`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

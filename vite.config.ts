@@ -18,7 +18,7 @@ const outDir = process.env.VITE_OUT_DIR || (isDevReload ? 'dist-dev' : 'dist')
 const emptyDir = entry === 'content' && !isDevReload
 
 export default defineConfig(() => {
-  if (entry === 'popup' || entry === 'sidepanel') {
+  if (entry === 'sidepanel') {
     return {
       base: '',
       plugins: [react()],
