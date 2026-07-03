@@ -2,14 +2,11 @@ import { useEffect, useMemo } from 'react'
 import type { FC } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { parseAnalysisJson } from '@/hooks/useAnalysis'
 
 interface AnalysisModalProps {
   visible: boolean
   title: string
   loading: boolean
-  streaming: boolean
-  streamText: string
   step: string
   error: string | null
   result: string | null
@@ -24,42 +21,11 @@ marked.setOptions({
 })
 
 export function resultToMarkdown(text: string): string {
-  const parsed = parseAnalysisJson(text)
-  if (!parsed) return text
-
-  const dimensions = parsed.dimensions
-  const dimensionRows: Array<[string, { score?: number; evidence?: string } | undefined]> = dimensions
-    ? [
-        ['主题集中度', dimensions.topic_focus],
-        ['内容重复度', dimensions.repetition],
-        ['商业植入', dimensions.commercial_intent],
-        ['情绪操控', dimensions.emotional_manipulation],
-        ['时间异常', dimensions.time_anomaly],
-        ['互动异常', dimensions.interaction_anomaly],
-        ['账号异常', dimensions.account_anomaly],
-      ]
-    : []
-
-  return [
-    '### 结论',
-    `**${parsed.risk_level}** - ${parsed.summary || '暂无摘要'}`,
-    '',
-    `总分: **${parsed.total_score}/100**`,
-    '',
-    parsed.tags.length ? `标签: ${parsed.tags.map((tag) => `\`${tag}\``).join(' ')}` : '',
-    '',
-    '### 评分',
-    '| 维度 | 得分 | 证据 |',
-    '|------|------|------|',
-    ...dimensionRows.map(([name, value]) => `| ${name} | ${Number(value?.score ?? 0)} | ${value?.evidence || '-'} |`),
-    '',
-    '### 关键证据',
-    ...(parsed.evidence.length ? parsed.evidence.map((item) => `- ${item}`) : ['- 暂无关键证据']),
-  ].filter(Boolean).join('\n')
+  return text
 }
 
 const AnalysisModal: FC<AnalysisModalProps> = ({
-  visible, title, loading, streaming, streamText, step, error, result,
+  visible, title, loading, step, error, result,
   articleCount, answerCount, onClose,
 }) => {
   useEffect(() => {
@@ -75,17 +41,13 @@ const AnalysisModal: FC<AnalysisModalProps> = ({
       const md = `**分析失败:**\n\n${error}`
       return DOMPurify.sanitize(marked.parse(md) as string)
     }
-    if (streaming && streamText) {
-      return DOMPurify.sanitize(marked.parse(resultToMarkdown(streamText)) as string)
-    }
     if (result) {
       return DOMPurify.sanitize(marked.parse(resultToMarkdown(result)) as string)
     }
     return null
-  }, [error, streaming, streamText, result])
+  }, [error, result])
 
-  const isStreamingActive = streaming && streamText
-  const showLoadingHint = loading && !streaming
+  const showLoadingHint = loading && !bodyHtml
 
   if (!visible) return null
 
@@ -120,9 +82,6 @@ const AnalysisModal: FC<AnalysisModalProps> = ({
           )}
           {bodyHtml && (
             <div className="za-markdown" dangerouslySetInnerHTML={{ __html: bodyHtml }} />
-          )}
-          {isStreamingActive && (
-            <span className="za-cursor" />
           )}
           {!loading && !bodyHtml && !error && (
             <div className="za-empty-state">点击分析按钮开始</div>

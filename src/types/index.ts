@@ -1,7 +1,4 @@
 export interface LLMConfig {
-  apiUrl: string
-  apiKey: string
-  model: string
   serviceUrl: string
 }
 
@@ -133,44 +130,15 @@ export interface AnalysisResult {
 export type MessageToBackground =
   | { type: 'fetchZhihu'; url: string; referer?: string }
   | { type: 'fetchZhihuFromTab'; url: string; referer?: string; tabId?: number }
-  | { type: 'generateLLM'; apiUrl: string; apiKey: string; model: string; messages: ChatMessage[]; responseFormat?: LLMResponseFormat }
   | { type: 'enableSidePanelForCurrentTab' }
   | { type: 'openSidePanel'; target: AnalysisTarget; maxPages?: number }
   | { type: 'getSidePanelTarget' }
   | { type: 'sidePanelAnalysisComplete'; target: AnalysisTarget; result: AnalysisJsonResult; tabId?: number }
   | { type: 'sidePanelAnalysisError'; target: AnalysisTarget; error: string; tabId?: number }
 
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant'
-  content: string
-}
-
-export type LLMJsonSchema = Record<string, unknown>
-
-export interface LLMResponseFormat {
-  type: 'object' | 'array'
-  name?: string
-  description?: string
-  schema: LLMJsonSchema
-}
-
 export type MessageResponse =
   | { ok: true; data: unknown }
   | { ok: false; error: string }
-
-export interface StreamRequest {
-  apiUrl: string
-  apiKey: string
-  model: string
-  messages: ChatMessage[]
-  jsonMode?: boolean
-  responseFormat?: LLMResponseFormat
-}
-
-export type StreamMessage =
-  | { type: 'delta'; text: string }
-  | { type: 'done' }
-  | { type: 'error'; error: string }
 
 export type MessageToContent =
   | { type: 'fetchZhihuInPage'; url: string; referer?: string }

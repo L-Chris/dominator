@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { resultToMarkdown } from '@/components/AnalysisModal'
-import { parseAnalysisJson, useAnalysis } from '@/hooks/useAnalysis'
+import { useAnalysis } from '@/hooks/useAnalysis'
 import type { SidePanelAnalysisRequest } from '@/types'
 
 marked.setOptions({
@@ -20,7 +20,7 @@ function getSidePanelTarget(): Promise<SidePanelAnalysisRequest | null> {
 }
 
 const SidePanel = () => {
-  const { loading, streaming, streamText, step, error, result, articleCount, answerCount, target, analyze } = useAnalysis()
+  const { loading, step, error, result, articleCount, answerCount, target, analyze } = useAnalysis()
   const [empty, setEmpty] = useState(true)
   const activeKeyRef = useRef('')
   const lastRequestIdRef = useRef('')
@@ -40,17 +40,14 @@ const SidePanel = () => {
     analyze(request.target, {
       maxPages: request.maxPages,
       tabId: request.tabId,
-      onComplete: (resultText, parsed) => {
+      onComplete: (analysisResult) => {
         if (activeKeyRef.current !== key) return
-        const analysisResult = parsed || parseAnalysisJson(resultText)
-        if (analysisResult) {
-          chrome.runtime.sendMessage({
-            type: 'sidePanelAnalysisComplete',
-            target: request.target,
-            result: analysisResult,
-            tabId: request.tabId,
-          })
-        }
+        chrome.runtime.sendMessage({
+          type: 'sidePanelAnalysisComplete',
+          target: request.target,
+          result: analysisResult,
+          tabId: request.tabId,
+        })
       },
       onError: (message) => {
         if (activeKeyRef.current !== key) return
@@ -77,14 +74,11 @@ const SidePanel = () => {
     if (error) {
       return DOMPurify.sanitize(marked.parse(`**分析失败:**\n\n${error}`) as string)
     }
-    if (streaming && streamText) {
-      return DOMPurify.sanitize(marked.parse(resultToMarkdown(streamText)) as string)
-    }
     if (result) {
       return DOMPurify.sanitize(marked.parse(resultToMarkdown(result)) as string)
     }
     return null
-  }, [error, result, streamText, streaming])
+  }, [error, result])
 
   const title = target ? (loading ? `分析中: ${target.userName}` : `分析报告: ${target.userName}`) : 'Dominator'
 
@@ -106,7 +100,7 @@ const SidePanel = () => {
           </div>
         )}
 
-        {loading && !streaming && !bodyHtml && (
+        {loading && !bodyHtml && (
           <div className="loading">
             <div className="spinner" />
             <div>
@@ -118,7 +112,6 @@ const SidePanel = () => {
         )}
 
         {bodyHtml && <div className="markdown" dangerouslySetInnerHTML={{ __html: bodyHtml }} />}
-        {streaming && streamText && <span className="cursor" />}
       </main>
 
       <style>{`

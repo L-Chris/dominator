@@ -1,8 +1,6 @@
-import { jsonrepair } from 'jsonrepair'
 import { fetchAnswers, getUserId, getUserName, getUserIdFromHref, summarizeAnswers } from '@/api/zhihu'
-import { generateLLM } from '@/api/llm'
-import { getLLMConfig } from '@/api/storage'
-import type { AnalysisJsonResult, AnalysisTarget, AnswerSummary, LLMResponseFormat, RiskLevel, SimpleAnalysisResult } from '@/types'
+import { getConfig } from '@/api/storage'
+import type { AnalysisJsonResult, AnalysisTarget, RiskLevel, SimpleAnalysisResult } from '@/types'
 import { startDevReloader } from '@/devReload'
 
 startDevReloader('content')
@@ -49,8 +47,8 @@ async function runSimpleAnalysisBatch() {
   })
 
   try {
-    const config = await getLLMConfig()
-    if (!config.apiKey) return
+    const config = await getConfig()
+    if (!config.serviceUrl) return
 
     const samples = await Promise.all(
       targets.map(async (target) => ({
@@ -59,29 +57,32 @@ async function runSimpleAnalysisBatch() {
       }))
     )
 
-    const resultText = await generateLLMText(
-      config.apiUrl || 'https://api.openai.com/v1/chat/completions',
-      config.apiKey,
-      config.model || 'gpt-4o-mini',
-      [
-        { role: 'system', content: SIMPLE_SYSTEM_PROMPT },
-        { role: 'user', content: buildSimplePrompt(samples) },
-      ]
-    )
+    const serviceUrl = config.serviceUrl.replace(/\/+$/, '')
+    const response = await fetch(`${serviceUrl}/api/analyze/quick`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        users: samples.map(({ target, answers }) => ({
+          userId: target.userId,
+          userName: target.userName,
+          answers,
+        })),
+      }),
+    })
 
-    const simpleResults = parseSimpleResults(resultText)
-    if (simpleResults.length === 0) {
-      console.warn('[zhihu-analyzer] simple analysis returned no usable scores', resultText)
-    }
+    if (!response.ok) throw new Error(`Backend returned ${response.status}`)
 
-    simpleResults.forEach((result, index) => {
-      const target = targets.find((item) => item.userId === result.user_id) || targets[index]
+    const data = await response.json() as { success: boolean; data?: Array<{ userId: string; riskScore: number; riskLevel: string; tags?: string[]; dimensions?: SimpleAnalysisResult['dimensions'] }> }
+    if (!data.success || !data.data) throw new Error('Backend returned invalid result')
+
+    data.data.forEach((result, index) => {
+      const target = targets.find((item) => item.userId === result.userId) || targets[index]
       if (!target) return
-      const normalized = {
+      const normalized: SimpleAnalysisResult = {
         user_id: target.userId,
-        risk_score: normalizeRiskScore(result.risk_score),
+        risk_score: normalizeRiskScore(result.riskScore),
         dimensions: normalizeSimpleDimensions(result.dimensions),
-        tags: buildTagsFromDimensions(normalizeSimpleDimensions(result.dimensions), normalizeRiskScore(result.risk_score)),
+        tags: buildTagsFromDimensions(normalizeSimpleDimensions(result.dimensions), normalizeRiskScore(result.riskScore)),
       }
       if (normalized.tags.length === 0) return
       simpleResultCache.set(target.userId, normalized)
@@ -118,202 +119,6 @@ function getTargetViewportPriority(userId: string): number {
 
   if (visibleRatio <= 0) return Math.max(0, 1000 - distanceToCenter)
   return 100000 + visibleRatio * 10000 - distanceToCenter
-}
-
-function generateLLMText(apiUrl: string, apiKey: string, model: string, messages: Parameters<typeof generateLLM>[3]): Promise<string> {
-  return generateLLM(apiUrl, apiKey, model, messages, SIMPLE_RESPONSE_FORMAT)
-}
-
-const SIMPLE_SYSTEM_PROMPT = `<role>
-你是知乎账号行为标签分析器。
-</role>
-
-<task>
-基于用户公开回答摘要，判断每个用户是否疑似水军、营销号或异常推广账号。
-为每个用户输出风险分数 risk_score 和各维度分数 dimensions。
-</task>
-
-<scoring>
-总分 0 到 100，分数越高表示越疑似异常账号。按以下维度加权评估：
-- topic_focus: 20 分，长期围绕同一品牌、公司、人物、争议议题。
-- repetition: 20 分，模板化表达、重复句式、观点机械复用。
-- commercial_intent: 15 分，频繁引导购买、注册、私信、站外转化。
-- emotional_manipulation: 15 分，夸大、攻击、煽动、带节奏。
-- time_anomaly: 10 分，短时间高频发布、异常活跃窗口。
-- interaction_anomaly: 10 分，互动数据、评论或感谢行为异常。
-- account_anomaly: 10 分，资料过空、新号、领域跳变、身份与内容不匹配。
-</scoring>
-
-<output_contract>
-只输出 JSON 对象，不要 Markdown，不要代码块，不要解释文字。
-需要输出各维度分数字段 dimensions，但不要输出标签、各维度解释、证据、总结或描述。
-</output_contract>
-
-<json_shape>
-{
-  "results": [
-    {
-      "user_id":"用户 id",
-      "risk_score":0,
-      "dimensions":{
-        "topic_focus":0,
-        "repetition":0,
-        "commercial_intent":0,
-        "emotional_manipulation":0,
-        "time_anomaly":0,
-        "interaction_anomaly":0,
-        "account_anomaly":0
-      }
-    }
-  ]
-}
-</json_shape>`
-
-const SIMPLE_RESPONSE_FORMAT: LLMResponseFormat = {
-  type: 'object',
-  name: 'zhihu_user_tags',
-  description: '一批知乎用户的简易标签结果',
-  schema: {
-    type: 'object',
-    additionalProperties: false,
-    required: ['results'],
-    properties: {
-      results: {
-        type: 'array',
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['user_id', 'risk_score', 'dimensions'],
-          properties: {
-            user_id: { type: 'string' },
-            risk_score: { type: 'number' },
-            dimensions: {
-              type: 'object',
-              additionalProperties: false,
-              required: [
-                'topic_focus',
-                'repetition',
-                'commercial_intent',
-                'emotional_manipulation',
-                'time_anomaly',
-                'interaction_anomaly',
-                'account_anomaly',
-              ],
-              properties: {
-                topic_focus: { type: 'number' },
-                repetition: { type: 'number' },
-                commercial_intent: { type: 'number' },
-                emotional_manipulation: { type: 'number' },
-                time_anomaly: { type: 'number' },
-                interaction_anomaly: { type: 'number' },
-                account_anomaly: { type: 'number' },
-              },
-            },
-          },
-        },
-      },
-    },
-  },
-}
-
-function buildSimplePrompt(samples: Array<{ target: AnalysisTarget; answers: AnswerSummary[] }>) {
-  const users = samples.map(({ target, answers }) => {
-    const answerText = answers.map((answer, index) => `<answer index="${index + 1}">
-<question>${escapePromptText(answer.question_title)}</question>
-<stats voteup_count="${answer.voteup_count}" comment_count="${answer.comment_count}" is_collapsed="${answer.is_collapsed}" />
-<content>${escapePromptText(answer.content_preview)}</content>
-</answer>`).join('\n')
-    return `<user id="${target.userId}" name="${escapePromptAttr(target.userName)}">
-<answers>
-${answerText || '无公开回答摘要'}
-</answers>
-</user>`
-  }).join('\n\n')
-
-  return `<batch>
-${users}
-</batch>`
-}
-
-function escapePromptAttr(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-}
-
-function escapePromptText(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-}
-
-function parseSimpleResults(text: string): SimpleAnalysisResult[] {
-  const jsonText = repairJsonText(extractJsonText(text))
-  try {
-    const parsed = JSON.parse(jsonText)
-    const list = normalizeSimpleResultList(parsed)
-    return list
-      .map((item) => ({
-        user_id: String(item?.user_id || item?.userId || item?.id || ''),
-        risk_score: normalizeRiskScore(item?.risk_score ?? item?.riskScore ?? item?.total_score ?? item?.score),
-        dimensions: normalizeSimpleDimensions(item?.dimensions),
-        tags: buildTagsFromDimensions(normalizeSimpleDimensions(item?.dimensions), normalizeRiskScore(item?.risk_score ?? item?.riskScore ?? item?.total_score ?? item?.score)),
-      }))
-      .filter((item) => item.user_id && item.tags.length > 0)
-  } catch {
-    console.warn('[zhihu-analyzer] failed to parse simple analysis JSON', text)
-    return []
-  }
-}
-
-function extractJsonText(text: string): string {
-  const trimmed = text.trim()
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```$/i, '')
-    .trim()
-
-  if (trimmed.startsWith('[') || trimmed.startsWith('{')) return trimmed
-
-  const arrayStart = trimmed.indexOf('[')
-  const arrayEnd = trimmed.lastIndexOf(']')
-  if (arrayStart >= 0 && arrayEnd > arrayStart) return trimmed.slice(arrayStart, arrayEnd + 1)
-
-  const objectStart = trimmed.indexOf('{')
-  const objectEnd = trimmed.lastIndexOf('}')
-  if (objectStart >= 0 && objectEnd > objectStart) return trimmed.slice(objectStart, objectEnd + 1)
-
-  return trimmed
-}
-
-function repairJsonText(text: string): string {
-  try {
-    return jsonrepair(text)
-  } catch {
-    return text
-  }
-}
-
-function normalizeSimpleResultList(parsed: unknown): Array<Record<string, unknown>> {
-  if (Array.isArray(parsed)) return parsed.filter(isRecord)
-  if (!isRecord(parsed)) return []
-
-  const candidates = [parsed.results, parsed.users, parsed.data, parsed.items]
-  const arrayCandidate = candidates.find(Array.isArray)
-  if (Array.isArray(arrayCandidate)) return arrayCandidate.filter(isRecord)
-
-  return Object.entries(parsed)
-    .reduce<Array<Record<string, unknown>>>((items, [userId, value]) => {
-      if (Array.isArray(value) || typeof value === 'string') {
-        items.push({ user_id: userId, tags: value })
-      } else if (isRecord(value)) {
-        items.push({ user_id: userId, ...value })
-      }
-      return items
-    }, [])
 }
 
 function buildTagsFromDimensions(dimensions: SimpleAnalysisResult['dimensions'], riskScore: number): string[] {

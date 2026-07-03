@@ -1,6 +1,4 @@
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import { generateText, jsonSchema, Output, streamText } from 'ai'
-import type { ChatMessage, LLMResponseFormat, MessageToBackground, MessageResponse, SidePanelAnalysisRequest, StreamRequest } from '@/types'
+import type { MessageToBackground, MessageResponse, SidePanelAnalysisRequest } from '@/types'
 import { startDevReloader } from '@/devReload'
 
 startDevReloader('background')
@@ -67,13 +65,6 @@ chrome.runtime.onMessage.addListener(
       return true
     }
 
-    if (msg.type === 'generateLLM') {
-      generateLLMText(msg)
-        .then((text) => sendResponse({ ok: true, data: text }))
-        .catch((err) => sendResponse({ ok: false, error: String(err) }))
-      return true
-    }
-
     if (msg.type === 'enableSidePanelForCurrentTab') {
       enableSidePanelForTab(sender.tab?.id).catch(() => undefined)
       sendResponse({ ok: true, data: null })
@@ -131,158 +122,6 @@ function getSidePanelOpenOptions(tabId?: number, windowId?: number): chrome.side
   if (tabId !== undefined) return { tabId }
   if (windowId !== undefined) return { windowId }
   return null
-}
-
-chrome.runtime.onConnect.addListener((port) => {
-  if (port.name !== 'streamLLM') return
-
-  port.onMessage.addListener(async (msg: StreamRequest) => {
-    const { apiUrl, apiKey, model, messages, responseFormat } = msg
-    const abortController = new AbortController()
-    port.onDisconnect.addListener(() => abortController.abort())
-
-    try {
-      const provider = createOpenAICompatible({
-        name: 'configured-openai-compatible',
-        baseURL: toOpenAICompatibleBaseURL(apiUrl),
-        apiKey,
-        supportsStructuredOutputs: true,
-      })
-      const outputSpec = getOutputSpec(responseFormat)
-
-      const callOptions = {
-        model: provider.chatModel(model),
-        instructions: getSystemInstructions(messages),
-        messages: getModelMessages(messages),
-        abortSignal: abortController.signal,
-      }
-
-      await streamToPort(
-        outputSpec
-          ? { ...callOptions, output: outputSpec }
-          : callOptions,
-        port
-      )
-    } catch (err) {
-      if (responseFormat && isStructuredOutputCompatibilityError(err)) {
-        try {
-          const provider = createOpenAICompatible({
-            name: 'configured-openai-compatible',
-            baseURL: toOpenAICompatibleBaseURL(apiUrl),
-            apiKey,
-          })
-
-          await streamToPort({
-            model: provider.chatModel(model),
-            instructions: getSystemInstructions(messages),
-            messages: getModelMessages(messages),
-            abortSignal: abortController.signal,
-          }, port)
-          return
-        } catch (fallbackErr) {
-          port.postMessage({ type: 'error', error: String(fallbackErr) })
-          return
-        }
-      }
-
-      port.postMessage({ type: 'error', error: String(err) })
-    }
-  })
-})
-
-function toOpenAICompatibleBaseURL(apiUrl: string): string {
-  const trimmed = apiUrl.trim().replace(/\/+$/, '')
-  return trimmed.replace(/\/chat\/completions$/i, '')
-}
-
-function getSystemInstructions(messages: ChatMessage[]): string | undefined {
-  const instructions = messages
-    .filter((message) => message.role === 'system')
-    .map((message) => message.content.trim())
-    .filter(Boolean)
-    .join('\n\n')
-  return instructions || undefined
-}
-
-function getModelMessages(messages: ChatMessage[]): Exclude<ChatMessage, { role: 'system' }>[] {
-  return messages.filter((message): message is Exclude<ChatMessage, { role: 'system' }> => message.role !== 'system')
-}
-
-function getOutputSpec(responseFormat?: LLMResponseFormat) {
-  if (!responseFormat) return undefined
-  const schema = jsonSchema(responseFormat.schema)
-
-  if (responseFormat.type === 'array') {
-    return Output.array({
-      element: schema,
-      name: responseFormat.name,
-      description: responseFormat.description,
-    })
-  }
-
-  return Output.object({
-    schema,
-    name: responseFormat.name,
-    description: responseFormat.description,
-  })
-}
-
-async function generateLLMText(msg: Extract<MessageToBackground, { type: 'generateLLM' }>): Promise<string> {
-  const { apiUrl, apiKey, model, messages, responseFormat } = msg
-  const provider = createOpenAICompatible({
-    name: 'configured-openai-compatible',
-    baseURL: toOpenAICompatibleBaseURL(apiUrl),
-    apiKey,
-    supportsStructuredOutputs: true,
-  })
-  const outputSpec = getOutputSpec(responseFormat)
-  const callOptions = {
-    model: provider.chatModel(model),
-    instructions: getSystemInstructions(messages),
-    messages: getModelMessages(messages),
-  }
-
-  try {
-    const result = await generateText(outputSpec ? { ...callOptions, output: outputSpec } : callOptions)
-    return result.text.trim()
-  } catch (err) {
-    if (!responseFormat || !isStructuredOutputCompatibilityError(err)) throw err
-
-    const fallbackProvider = createOpenAICompatible({
-      name: 'configured-openai-compatible',
-      baseURL: toOpenAICompatibleBaseURL(apiUrl),
-      apiKey,
-    })
-    const fallbackResult = await generateText({
-      model: fallbackProvider.chatModel(model),
-      instructions: getSystemInstructions(messages),
-      messages: getModelMessages(messages),
-    })
-    return fallbackResult.text.trim()
-  }
-}
-
-async function streamToPort(options: Parameters<typeof streamText>[0], port: chrome.runtime.Port) {
-  const result = streamText(options)
-
-  for await (const text of result.textStream) {
-    if (text) {
-      port.postMessage({ type: 'delta', text })
-    }
-  }
-
-  port.postMessage({ type: 'done' })
-}
-
-function isStructuredOutputCompatibilityError(err: unknown): boolean {
-  const message = String(err).toLowerCase()
-  return message.includes('404')
-    || message.includes('400')
-    || message.includes('responseformat')
-    || message.includes('response_format')
-    || message.includes('json_schema')
-    || message.includes('structured')
-    || message.includes('unsupported')
 }
 
 function fetchZhihu(url: string, referer?: string): Promise<Response> {
