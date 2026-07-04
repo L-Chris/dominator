@@ -11,6 +11,7 @@ type QuickAnalysisResponse = {
     platform_user_id: string
     risk_score: number
     risk_level: string
+    user_type?: string
     tags?: string[]
     dimensions?: SimpleAnalysisResult['dimensions']
     cached?: boolean
@@ -150,14 +151,19 @@ function applyQuickAnalysisData(data: QuickAnalysisResponse, targets: AnalysisTa
 
     const riskScore = normalizeRiskScore(result.risk_score)
     const dimensions = normalizeSimpleDimensions(result.dimensions)
+    const userTypeLabel = getUserTypeLabel(result.user_type)
     const tags = Array.isArray(result.tags)
       ? result.tags.map(String).filter(Boolean)
       : buildTagsFromDimensions(dimensions, riskScore)
+    const displayTags = userTypeLabel
+      ? [userTypeLabel, ...tags.filter((tag) => tag !== userTypeLabel)]
+      : tags
     const normalized: SimpleAnalysisResult = {
       user_id: target.userId,
       risk_score: riskScore,
+      user_type: result.user_type,
       dimensions,
-      tags: tags.length > 0 ? tags : buildTagsFromDimensions(dimensions, riskScore),
+      tags: displayTags.length > 0 ? displayTags : buildTagsFromDimensions(dimensions, riskScore),
     }
 
     simpleResultCache.set(target.userId, normalized)
@@ -278,8 +284,24 @@ function buildTagsFromDimensions(dimensions: SimpleAnalysisResult['dimensions'],
   return tags.length > 0 ? tags : [getSimpleRiskLevel(riskScore)]
 }
 
+function getUserTypeLabel(userType?: string): string | null {
+  const labels: Record<string, string> = {
+    normal_user: '普通用户',
+    vertical_enthusiast: '垂类爱好者',
+    brand_fan: '品牌粉',
+    soft_marketing_account: '软广号',
+    hard_promotion_account: '硬广导流号',
+    template_spam_account: '模板搬运号',
+    opinion_manipulation_account: '舆论带节奏号',
+    coordinated_account: '协同水军号',
+    bot_like_account: '机器人式账号',
+  }
+  return userType && userType !== 'uncertain' ? labels[userType] || null : null
+}
+
 function buildTagsFromAnalysisResult(result: AnalysisJsonResult): string[] {
-  return buildTagsFromDimensions({
+  const userTypeLabel = getUserTypeLabel(result.user_type)
+  const tags = buildTagsFromDimensions({
     topic_focus: result.dimensions.topic_focus?.score,
     repetition: result.dimensions.repetition?.score,
     commercial_intent: result.dimensions.commercial_intent?.score,
@@ -288,6 +310,7 @@ function buildTagsFromAnalysisResult(result: AnalysisJsonResult): string[] {
     interaction_anomaly: result.dimensions.interaction_anomaly?.score,
     account_anomaly: result.dimensions.account_anomaly?.score,
   }, result.total_score)
+  return userTypeLabel ? [userTypeLabel, ...tags.filter((tag) => tag !== userTypeLabel)] : tags
 }
 
 function normalizeRiskScore(value: unknown): number {

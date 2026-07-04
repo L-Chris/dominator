@@ -3,6 +3,7 @@ export type RiskLevel = '低风险' | '中风险' | '高风险' | '极高风险'
 export interface AnalysisJsonResult {
   risk_level: RiskLevel
   total_score: number
+  user_type?: string
   summary: string
   tags: string[]
   dimensions: {
@@ -20,6 +21,7 @@ export interface AnalysisJsonResult {
 export interface SimpleAnalysisResult {
   user_id: string
   risk_score: number
+  user_type?: string
   dimensions?: {
     topic_focus?: number
     repetition?: number

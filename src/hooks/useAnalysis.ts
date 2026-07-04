@@ -100,6 +100,7 @@ export function useAnalysis() {
         data?: {
           risk_level: string
           total_score: number
+          user_type?: string
           summary: string
           tags: unknown
           dimensions: unknown
@@ -116,6 +117,7 @@ export function useAnalysis() {
       const result: AnalysisJsonResult = {
         risk_level: json.data.risk_level as AnalysisJsonResult['risk_level'],
         total_score: json.data.total_score,
+        user_type: json.data.user_type,
         summary: json.data.summary,
         tags: Array.isArray(json.data.tags) ? json.data.tags.map(String) : [],
         dimensions: json.data.dimensions as AnalysisJsonResult['dimensions'],
