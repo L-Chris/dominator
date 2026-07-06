@@ -1,6 +1,8 @@
 import { fetchAnswers, getUserId, getUserName, getUserIdFromHref, summarizeAnswers } from '@/api/zhihu'
 import type { AnalysisTarget, RiskLevel, SimpleAnalysisResult } from '@/types'
 import { startDevReloader } from '@/devReload'
+import { DEFAULT_FILTER_SETTINGS, loadFilterSettings, parseFilterSettingsChange, type FilterSettings } from '@/api/filterSettings'
+import { getUserTypeLabel } from '@/api/userTypes'
 
 startDevReloader('content')
 
@@ -22,10 +24,11 @@ const simpleResultCache = new Map<string, SimpleAnalysisResult>()
 const simpleQueue = new Map<string, AnalysisTarget>()
 const simpleInFlight = new Set<string>()
 const simpleRetryCounts = new Map<string, number>()
+let filterSettings: FilterSettings = DEFAULT_FILTER_SETTINGS
 let simpleAnalyzeTimer: number | null = null
 let simpleAnalyzing = false
 const SIMPLE_BATCH_SIZE = 1
-const SIMPLE_MAX_RETRIES = 2
+const SIMPLE_MAX_RETRIES = 1
 const SIMPLE_AUTO_ANALYSIS_ENABLED = import.meta.env.VITE_ZHIHU_AUTO_QUICK_ANALYSIS !== 'false'
 const SIMPLE_AUTO_START_DELAY_MS = getPositiveIntegerEnv('VITE_ZHIHU_AUTO_QUICK_ANALYSIS_DELAY_MS', 2000)
 const SIMPLE_FETCH_TIMEOUT_MS = getPositiveIntegerEnv('VITE_ZHIHU_QUICK_ANALYSIS_TIMEOUT_MS', 12000)
@@ -89,7 +92,9 @@ async function runSimpleAnalysisBatch() {
       applyQuickAnalysisData(cachedData, targets)
       return
     } catch (err) {
-      if (!isStatusError(err, 404)) throw err
+      if (!isStatusError(err, 404)) {
+        console.warn('[Dominator] quick analysis cache lookup failed, falling back to live analysis', err)
+      }
     }
 
     const samples = await Promise.all(
@@ -150,7 +155,7 @@ function applyQuickAnalysisData(data: QuickAnalysisResponse, targets: AnalysisTa
     const userTypeLabel = getUserTypeLabel(result.user_type)
     const tags = Array.isArray(result.tags)
       ? result.tags.map(String).filter(Boolean)
-      : buildTagsFromDimensions(dimensions, riskScore)
+      : buildTagsFromDimensions(dimensions)
     const displayTags = userTypeLabel
       ? [userTypeLabel, ...tags.filter((tag) => tag !== userTypeLabel)]
       : tags
@@ -159,7 +164,7 @@ function applyQuickAnalysisData(data: QuickAnalysisResponse, targets: AnalysisTa
       risk_score: riskScore,
       user_type: result.user_type,
       dimensions,
-      tags: displayTags.length > 0 ? displayTags : buildTagsFromDimensions(dimensions, riskScore),
+      tags: displayTags.length > 0 ? displayTags : buildTagsFromDimensions(dimensions),
     }
 
     simpleResultCache.set(target.userId, normalized)
@@ -259,8 +264,8 @@ function isElementInViewport(element: HTMLElement): boolean {
   return visibleBottom > visibleTop && visibleRight > visibleLeft
 }
 
-function buildTagsFromDimensions(dimensions: SimpleAnalysisResult['dimensions'], riskScore: number): string[] {
-  if (!dimensions) return [getSimpleRiskLevel(riskScore)]
+function buildTagsFromDimensions(dimensions: SimpleAnalysisResult['dimensions']): string[] {
+  if (!dimensions) return []
 
   const tags = [
     { label: '议题集中', score: dimensions.topic_focus ?? 0, max: 20 },
@@ -277,22 +282,7 @@ function buildTagsFromDimensions(dimensions: SimpleAnalysisResult['dimensions'],
     .slice(0, 5)
     .map((item) => item.label)
 
-  return tags.length > 0 ? tags : [getSimpleRiskLevel(riskScore)]
-}
-
-function getUserTypeLabel(userType?: string): string | null {
-  const labels: Record<string, string> = {
-    normal_user: '普通用户',
-    vertical_enthusiast: '垂类爱好者',
-    brand_fan: '品牌粉',
-    soft_marketing_account: '软广号',
-    hard_promotion_account: '硬广导流号',
-    template_spam_account: '模板搬运号',
-    opinion_manipulation_account: '舆论带节奏号',
-    coordinated_account: '协同水军号',
-    bot_like_account: '机器人式账号',
-  }
-  return userType && userType !== 'uncertain' ? labels[userType] || null : null
+  return tags
 }
 
 function normalizeRiskScore(value: unknown): number {
@@ -353,11 +343,91 @@ function ensureStyle() {
       align-items: center;
       flex-wrap: wrap;
       gap: 4px;
-      margin-left: 0;
+      margin-left: 6px;
       vertical-align: middle;
     }
 
     .za-avatar-tags:empty {
+      display: none;
+    }
+
+    .za-loading-indicator {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 22px;
+      flex: 0 0 auto;
+    }
+
+    .za-loading-indicator::before,
+    .za-loading-indicator::after {
+      content: '';
+      position: absolute;
+      inset: 1px 2px;
+      border: 1px solid rgba(31, 136, 255, 0.55);
+      border-radius: 999px;
+      opacity: 0;
+      animation: za-loading-ripple 1.45s ease-out infinite;
+    }
+
+    .za-loading-indicator::after {
+      animation-delay: 0.45s;
+    }
+
+    .za-loading-icon {
+      position: relative;
+      z-index: 1;
+      width: 24px;
+      height: 24px;
+      object-fit: contain;
+      filter: drop-shadow(0 0 4px rgba(9, 218, 255, 0.55));
+      animation: za-loading-pulse 1.45s ease-in-out infinite;
+    }
+
+    @keyframes za-loading-ripple {
+      0% {
+        transform: scale(0.72);
+        opacity: 0.8;
+      }
+      100% {
+        transform: scale(1.45);
+        opacity: 0;
+      }
+    }
+
+    @keyframes za-loading-pulse {
+      0%, 100% {
+        transform: translateY(0) scale(0.96);
+        opacity: 0.85;
+      }
+      50% {
+        transform: translateY(-1px) scale(1.04);
+        opacity: 1;
+      }
+    }
+
+    .za-author-name-with-tags {
+      display: inline-flex !important;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .za-author-name-with-tags .za-avatar-tags {
+      margin-left: 0;
+    }
+
+    .za-hover-tags {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 8px;
+      min-height: 18px;
+    }
+
+    .za-hover-tags:empty {
       display: none;
     }
 
@@ -397,6 +467,57 @@ function ensureStyle() {
       background: #ffebe9;
       color: #a40e26;
     }
+
+    .za-filter-placeholder {
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      width: 100%;
+      min-height: 48px;
+      margin: 8px 0;
+      padding: 10px 14px;
+      border: 1px solid #d8dee4;
+      border-radius: 8px;
+      background: #f6f8fa;
+      color: #57606a;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+
+    .za-filter-placeholder-text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .za-filter-expand-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border: 1px solid #8c959f;
+      border-radius: 6px;
+      background: #ffffff;
+      color: #24292f;
+      cursor: pointer;
+    }
+
+    .za-filter-expand-button:hover {
+      border-color: #57606a;
+      background: #f3f4f6;
+    }
+
+    .za-filter-expand-button svg {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+    }
   `
   document.head.appendChild(style)
 }
@@ -406,23 +527,31 @@ function updateSimpleTags(userId: string, result: SimpleAnalysisResult) {
     container.replaceChildren()
     container.dataset.status = 'done'
 
-    renderPageTags(container, {
+    renderLabelTags(container, {
       score: result.risk_score,
-      labels: result.tags,
+      labels: getPrimaryLabels(result),
+      title: '简易分析',
+    })
+  })
+  updateHoverTags(userId, result)
+  applyUserFilter(userId, result)
+}
+
+function updateHoverTags(userId: string, result: SimpleAnalysisResult) {
+  document.querySelectorAll<HTMLElement>(`.za-hover-tags[data-user-id="${CSS.escape(userId)}"]`).forEach((container) => {
+    container.replaceChildren()
+    container.dataset.status = 'done'
+
+    renderLabelTags(container, {
+      score: result.risk_score,
+      labels: getHoverLabels(result),
       title: '简易分析',
     })
   })
 }
 
-function renderPageTags(container: HTMLElement, options: { score: number; labels: string[]; title?: string }) {
+function renderLabelTags(container: HTMLElement, options: { score: number; labels: string[]; title?: string }) {
   const riskLevel = getSimpleRiskLevel(options.score)
-  const scoreTag = document.createElement('span')
-  scoreTag.className = 'za-avatar-tag'
-  scoreTag.dataset.risk = riskLevel
-  scoreTag.textContent = `${options.score}分`
-  scoreTag.title = `风险分数 ${options.score}`
-  container.appendChild(scoreTag)
-
   options.labels.slice(0, 5).forEach((label) => {
     const tag = document.createElement('span')
     tag.className = 'za-avatar-tag'
@@ -433,6 +562,149 @@ function renderPageTags(container: HTMLElement, options: { score: number; labels
   })
 }
 
+function getPrimaryLabels(result: SimpleAnalysisResult): string[] {
+  const userTypeLabel = getUserTypeLabel(result.user_type)
+  return userTypeLabel ? [userTypeLabel] : []
+}
+
+function getHoverLabels(result: SimpleAnalysisResult): string[] {
+  const userTypeLabel = getUserTypeLabel(result.user_type)
+  return result.tags.filter((label) => label && label !== userTypeLabel)
+}
+
+function shouldCollapseUser(result: SimpleAnalysisResult): boolean {
+  return Boolean(result.user_type && filterSettings.blockedUserTypes.includes(result.user_type))
+}
+
+function applyAllUserFilters() {
+  simpleResultCache.forEach((result, userId) => applyUserFilter(userId, result))
+}
+
+function applyUserFilter(userId: string, result: SimpleAnalysisResult) {
+  const shouldCollapse = shouldCollapseUser(result)
+  const label = getUserTypeLabel(result.user_type) || result.user_type || '当前类型用户'
+
+  findUserContentHosts(userId).forEach((host) => {
+    host.dataset.zaFilterUserId = userId
+    if (shouldCollapse && host.dataset.zaFilterExpanded !== 'true') {
+      collapseUserHost(host, userId, label)
+      return
+    }
+
+    restoreUserHost(host)
+  })
+}
+
+function findUserContentHosts(userId: string): HTMLElement[] {
+  const hosts = new Set<HTMLElement>()
+
+  document.querySelectorAll<HTMLAnchorElement>('a.UserLink-link[href*="/people/"]').forEach((link) => {
+    if (getUserIdFromHref(link.href) !== userId) return
+
+    const host = getFilterHostForUserLink(link)
+    if (host) hosts.add(host)
+  })
+
+  return Array.from(hosts)
+}
+
+function getFilterHostForUserLink(link: HTMLAnchorElement): HTMLElement | null {
+  if (isFloatingHoverCard(link) || link.closest('.ProfileHeader')) return null
+  if (!link.closest('.AuthorInfo-head')) return null
+
+  const host = link.closest<HTMLElement>('.List-item')
+    || link.closest<HTMLElement>('.AnswerItem')
+    || link.closest<HTMLElement>('.ContentItem')
+  if (!host) return null
+
+  if (!host.querySelector('.RichContent, .ContentItem-actions')) return null
+  return host
+}
+
+function collapseUserHost(host: HTMLElement, userId: string, label: string) {
+  const placeholder = ensureFilterPlaceholder(host)
+  placeholder.dataset.userId = userId
+
+  const text = document.createElement('span')
+  text.className = 'za-filter-placeholder-text'
+  text.textContent = label
+
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'za-filter-expand-button'
+  button.title = '展开'
+  button.setAttribute('aria-label', '展开')
+  button.appendChild(createExpandIcon())
+  button.addEventListener('click', () => {
+    host.dataset.zaFilterExpanded = 'true'
+    restoreUserHost(host)
+  })
+
+  placeholder.replaceChildren(text, button)
+  if (!host.dataset.zaFilterPreviousDisplay) {
+    host.dataset.zaFilterPreviousDisplay = host.style.display || '__empty__'
+  }
+  host.style.display = 'none'
+}
+
+function createExpandIcon(): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  svg.setAttribute('viewBox', '0 0 24 24')
+  svg.setAttribute('fill', 'none')
+  svg.setAttribute('stroke-width', '2')
+  svg.setAttribute('stroke-linecap', 'round')
+  svg.setAttribute('stroke-linejoin', 'round')
+  svg.setAttribute('aria-hidden', 'true')
+
+  const paths = [
+    'M8 3H5a2 2 0 0 0-2 2v3',
+    'M16 3h3a2 2 0 0 1 2 2v3',
+    'M8 21H5a2 2 0 0 1-2-2v-3',
+    'M16 21h3a2 2 0 0 0 2-2v-3',
+    'M9 9l-4-4',
+    'M15 9l4-4',
+    'M9 15l-4 4',
+    'M15 15l4 4',
+  ]
+
+  paths.forEach((value) => {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    path.setAttribute('d', value)
+    svg.appendChild(path)
+  })
+
+  return svg
+}
+
+function ensureFilterPlaceholder(host: HTMLElement): HTMLElement {
+  const existing = getFilterPlaceholder(host)
+  if (existing) {
+    if (existing.nextElementSibling !== host) host.before(existing)
+    return existing
+  }
+
+  const placeholder = document.createElement('div')
+  placeholder.className = 'za-filter-placeholder'
+  host.before(placeholder)
+  return placeholder
+}
+
+function getFilterPlaceholder(host: HTMLElement): HTMLElement | null {
+  const previous = host.previousElementSibling
+  if (previous instanceof HTMLElement && previous.classList.contains('za-filter-placeholder')) return previous
+  return null
+}
+
+function restoreUserHost(host: HTMLElement) {
+  const previousDisplay = host.dataset.zaFilterPreviousDisplay
+  if (previousDisplay === '__empty__') host.style.removeProperty('display')
+  else if (previousDisplay) host.style.display = previousDisplay
+  else host.style.removeProperty('display')
+
+  delete host.dataset.zaFilterPreviousDisplay
+  getFilterPlaceholder(host)?.remove()
+}
+
 function getSimpleRiskLevel(score: number): RiskLevel {
   if (score >= 80) return '极高风险'
   if (score >= 60) return '高风险'
@@ -440,14 +712,8 @@ function getSimpleRiskLevel(score: number): RiskLevel {
   return '低风险'
 }
 
-function getAnalysisRow(host: HTMLElement, userId: string): HTMLElement {
-  let row = host.querySelector<HTMLElement>(`.za-analysis-row[data-user-id="${CSS.escape(userId)}"]`)
-  if (!row) {
-    row = document.createElement('div')
-    row.className = 'za-analysis-row'
-    row.dataset.userId = userId
-  }
-  return row
+function removeEmptyAnalysisRow(row: HTMLElement | null) {
+  if (row && row.childElementCount === 0) row.remove()
 }
 
 function ensureAvatarTags(nameWrap: HTMLElement, userId: string) {
@@ -456,10 +722,7 @@ function ensureAvatarTags(nameWrap: HTMLElement, userId: string) {
   const authorInfo = authorContent?.parentElement || nameWrap.closest<HTMLElement>('.AuthorInfo')
   if (!authorInfo || !authorHead) return
 
-  const row = getAnalysisRow(authorContent || authorInfo, userId)
-  if (row.parentElement !== authorContent || authorHead.nextElementSibling !== row) {
-    authorHead.after(row)
-  }
+  const row = authorInfo.querySelector<HTMLElement>(`.za-analysis-row[data-user-id="${CSS.escape(userId)}"]`)
 
   let container = authorInfo.querySelector<HTMLElement>(`.za-avatar-tags[data-user-id="${CSS.escape(userId)}"]`)
   if (!container) {
@@ -468,9 +731,11 @@ function ensureAvatarTags(nameWrap: HTMLElement, userId: string) {
     container.dataset.userId = userId
   }
 
-  if (container.parentElement !== row || row.firstElementChild !== container) {
-    row.prepend(container)
+  if (container.parentElement !== nameWrap) {
+    nameWrap.appendChild(container)
   }
+  nameWrap.classList.add('za-author-name-with-tags')
+  removeEmptyAnalysisRow(row)
 
   const simpleResult = simpleResultCache.get(userId)
   if (simpleResult) updateSimpleTags(userId, simpleResult)
@@ -480,23 +745,117 @@ function ensureProfileAvatarTags(userId: string) {
   const title = document.querySelector<HTMLElement>('.ProfileHeader-title')
   if (!title) return
 
-  const row = getAnalysisRow(title, userId)
-  if (row.parentElement !== title) title.appendChild(row)
+  const row = title.querySelector<HTMLElement>(`.za-analysis-row[data-user-id="${CSS.escape(userId)}"]`)
 
-  let container = document.querySelector<HTMLElement>(`.za-avatar-tags[data-user-id="${CSS.escape(userId)}"]`)
+  let container = title.querySelector<HTMLElement>(`.za-avatar-tags[data-user-id="${CSS.escape(userId)}"]`)
   if (!container) {
     container = document.createElement('span')
     container.className = 'za-avatar-tags'
     container.dataset.userId = userId
   }
 
-  if (container.parentElement !== row || row.firstElementChild !== container) {
-    row.prepend(container)
+  if (container.parentElement !== title) {
+    title.appendChild(container)
   }
+  removeEmptyAnalysisRow(row)
 
   const simpleResult = simpleResultCache.get(userId)
   if (simpleResult) updateSimpleTags(userId, simpleResult)
   else enqueueSimpleAnalysis({ userId, userName: getUserName() })
+}
+
+function ensureHoverCardTags() {
+  removeDetachedHoverTags()
+
+  const cards = getUserHoverCards()
+  cards.forEach((card) => {
+    const nameLink = getHoverCardNameLink(card)
+    if (!nameLink) return
+
+    const userId = getUserIdFromHref(nameLink.href)
+    const userName = nameLink.textContent?.trim()
+    if (!userId || !userName) return
+
+    let container = card.querySelector<HTMLElement>(`.za-hover-tags[data-user-id="${CSS.escape(userId)}"]`)
+    if (!container) {
+      container = document.createElement('div')
+      container.className = 'za-hover-tags'
+      container.dataset.userId = userId
+    }
+
+    const anchor = getHoverCardTagAnchor(nameLink)
+    if (container.parentElement !== anchor.parentElement || container.previousElementSibling !== anchor) {
+      anchor.after(container)
+    }
+
+    const simpleResult = simpleResultCache.get(userId)
+    if (simpleResult) updateHoverTags(userId, simpleResult)
+    else enqueueSimpleAnalysis({ userId, userName })
+  })
+}
+
+function getUserHoverCards(): HTMLElement[] {
+  const cards = new Set<HTMLElement>()
+
+  document.querySelectorAll<HTMLAnchorElement>('a.UserLink-link[href*="/people/"]').forEach((link) => {
+    if (!isUserHomeLink(link.href) || !link.textContent?.trim()) return
+
+    const card = getHoverCardRoot(link)
+    if (card) cards.add(card)
+  })
+
+  return Array.from(cards)
+}
+
+function getHoverCardRoot(nameLink: HTMLAnchorElement): HTMLElement | null {
+  let element = nameLink.parentElement
+  while (element && element !== document.body) {
+    if (element.querySelector('.NumberBoard') && element.querySelector('.HoverCard-buttons, .MemberButtonGroup')) {
+      return isFloatingHoverCard(element) ? element : null
+    }
+    element = element.parentElement
+  }
+  return null
+}
+
+function removeDetachedHoverTags() {
+  document.querySelectorAll<HTMLElement>('.za-hover-tags').forEach((container) => {
+    if (!isFloatingHoverCard(container)) container.remove()
+  })
+}
+
+function isFloatingHoverCard(element: HTMLElement): boolean {
+  let current: HTMLElement | null = element
+  while (current && current !== document.body) {
+    const style = window.getComputedStyle(current)
+    if (style.position === 'absolute' || style.position === 'fixed') return true
+    current = current.parentElement
+  }
+  return false
+}
+
+function getHoverCardNameLink(card: HTMLElement): HTMLAnchorElement | null {
+  return Array.from(card.querySelectorAll<HTMLAnchorElement>('a.UserLink-link[href*="/people/"]'))
+    .find((link) => Boolean(link.textContent?.trim()) && isUserHomeLink(link.href)) || null
+}
+
+function getHoverCardTagAnchor(nameLink: HTMLAnchorElement): HTMLElement {
+  const userLink = nameLink.closest<HTMLElement>('.UserLink')
+  const titleBlock = userLink?.parentElement?.parentElement
+  return nameLink.closest<HTMLElement>('.HoverCard-title, .MemberCard-name')
+    || titleBlock
+    || userLink
+    || nameLink.parentElement
+    || nameLink
+}
+
+function isUserHomeLink(href: string): boolean {
+  try {
+    const path = new URL(href, location.origin).pathname
+    return /^\/people\/[^/]+\/?$/.test(path)
+  } catch {
+    return false
+  }
 }
 
 function normalizeAuthorHead(authorHead: HTMLElement) {
@@ -538,6 +897,7 @@ function injectQuestionAuthorTags() {
 function inject() {
   if (location.pathname.startsWith('/people/')) injectProfileTags()
   injectQuestionAuthorTags()
+  ensureHoverCardTags()
 }
 
 let injectTimer: number | null = null
@@ -548,12 +908,12 @@ function shouldReactToMutations(mutations: MutationRecord[]): boolean {
     const nodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)]
     return nodes.some((node) => {
       if (node instanceof HTMLElement) {
-        return !node.matches('.za-analysis-row, .za-avatar-tags, .za-avatar-tag')
-          && !node.closest('.za-analysis-row, .za-avatar-tags')
+        return !node.matches('.za-analysis-row, .za-avatar-tags, .za-hover-tags, .za-avatar-tag, .za-filter-placeholder')
+          && !node.closest('.za-analysis-row, .za-avatar-tags, .za-hover-tags, .za-filter-placeholder')
       }
 
       const parent = node.parentElement
-      return parent ? !parent.closest('.za-analysis-row, .za-avatar-tags') : false
+      return parent ? !parent.closest('.za-analysis-row, .za-avatar-tags, .za-hover-tags, .za-filter-placeholder') : false
     })
   })
 }
@@ -563,12 +923,26 @@ function setSimpleTagsStatus(userId: string, status: 'loading' | 'error') {
     container.replaceChildren()
     container.dataset.status = status
 
-    const tag = document.createElement('span')
-    tag.className = 'za-avatar-tag'
-    tag.textContent = status === 'loading' ? '简析中' : '简析失败'
-    tag.title = status === 'loading' ? '正在进行简易分析' : '简易分析失败'
-    container.appendChild(tag)
+    if (status === 'loading') {
+      renderLoadingIndicator(container)
+      return
+    }
   })
+}
+
+function renderLoadingIndicator(container: HTMLElement) {
+  const indicator = document.createElement('span')
+  indicator.className = 'za-loading-indicator'
+  indicator.title = '正在进行简易分析'
+
+  const icon = document.createElement('img')
+  icon.className = 'za-loading-icon'
+  icon.alt = ''
+  icon.decoding = 'async'
+  icon.src = chrome.runtime.getURL('icons/dominator-loading.png')
+
+  indicator.appendChild(icon)
+  container.appendChild(indicator)
 }
 
 function scheduleInject(mutations?: MutationRecord[]) {
@@ -588,12 +962,35 @@ function scheduleVisibleQueueAnalysis() {
   }, 150)
 }
 
+function initializeFilterSettings() {
+  loadFilterSettings()
+    .then((settings) => {
+      filterSettings = settings
+      applyAllUserFilters()
+      scheduleInject()
+    })
+    .catch((err) => {
+      console.warn('[Dominator] failed to load filter settings', err)
+    })
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'sync') return
+
+    const settings = parseFilterSettingsChange(changes)
+    if (!settings) return
+
+    filterSettings = settings
+    applyAllUserFilters()
+  })
+}
+
 const observer = new MutationObserver((mutations) => scheduleInject(mutations))
 observer.observe(document.body, { childList: true, subtree: true })
 window.addEventListener('scroll', () => {
   scheduleInject()
   scheduleVisibleQueueAnalysis()
 }, { passive: true })
+initializeFilterSettings()
 window.setTimeout(inject, SIMPLE_AUTO_START_DELAY_MS)
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

@@ -107,7 +107,7 @@ function startDistWatcher() {
 
 const server = startReloadServer()
 
-for (const entry of ['content', 'background']) {
+for (const entry of ['content', 'background', 'popup']) {
   spawnViteWatch(entry)
 }
 

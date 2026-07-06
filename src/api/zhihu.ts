@@ -81,21 +81,61 @@ export async function fetchArticles(maxPages = 5, targetUserId = getUserId(), ta
 
 export async function fetchAnswers(maxPages = 5, targetUserId = getUserId(), tabId?: number): Promise<Answer[]> {
   if (!targetUserId) return []
+  if (maxPages <= 0) return []
 
   const allItems: Answer[] = []
-  let nextUrl = `https://www.zhihu.com/api/v4/members/${targetUserId}/answers?include=${encodeURIComponent(ANSWER_INCLUDE)}&offset=0&limit=${PAGE_SIZE}&sort_by=created&ws_qiangzhisafe=0`
-  let effectiveMaxPages = maxPages
+  const seenIds = new Set<string>()
 
-  for (let i = 0; i < effectiveMaxPages; i++) {
-    const res = await sendFetch<Answer>(nextUrl, `https://www.zhihu.com/people/${targetUserId}/answers`, tabId)
-    if (!res?.ok || !res.data?.data) break
-    allItems.push(...(res.data.data as Answer[]))
-    effectiveMaxPages = getEffectiveMaxPages(effectiveMaxPages, res.data)
-    if (res.data.paging?.is_end) break
-    if (!res.data.paging?.next) break
-    nextUrl = res.data.paging.next.replace(/^http:/, 'https:')
-  }
+  const firstUrl = buildAnswersUrl(targetUserId, 0)
+  debugFetchAnswers(targetUserId, 1, maxPages, firstUrl, allItems.length)
+  const firstRes = await sendFetch<Answer>(firstUrl, `https://www.zhihu.com/people/${targetUserId}/answers`, tabId)
+  if (!firstRes?.ok || !firstRes.data?.data) return allItems
+
+  appendUniqueAnswers(allItems, seenIds, firstRes.data.data as Answer[])
+
+  const effectiveMaxPages = getEffectiveMaxPages(maxPages, firstRes.data)
+  if (firstRes.data.paging?.is_end || effectiveMaxPages <= 1) return allItems
+
+  const remainingRequests = Array.from({ length: effectiveMaxPages - 1 }, (_, index) => {
+    const page = index + 2
+    const url = buildAnswersUrl(targetUserId, (page - 1) * PAGE_SIZE)
+    debugFetchAnswers(targetUserId, page, effectiveMaxPages, url, allItems.length)
+    return sendFetch<Answer>(url, `https://www.zhihu.com/people/${targetUserId}/answers`, tabId)
+  })
+
+  const remainingResponses = await Promise.all(remainingRequests)
+  remainingResponses.forEach((res) => {
+    if (!res?.ok || !res.data?.data) return
+    appendUniqueAnswers(allItems, seenIds, res.data.data as Answer[])
+  })
+
   return allItems
+}
+
+function buildAnswersUrl(targetUserId: string, offset: number): string {
+  return `https://www.zhihu.com/api/v4/members/${targetUserId}/answers?include=${encodeURIComponent(ANSWER_INCLUDE)}&offset=${offset}&limit=${PAGE_SIZE}&sort_by=created&ws_qiangzhisafe=0`
+}
+
+function appendUniqueAnswers(allItems: Answer[], seenIds: Set<string>, answers: Answer[]) {
+  for (const answer of answers) {
+    const answerId = String(answer.id)
+    if (seenIds.has(answerId)) continue
+    seenIds.add(answerId)
+    allItems.push(answer)
+  }
+}
+
+function debugFetchAnswers(targetUserId: string, page: number, maxPages: number, url: string, loadedCount: number) {
+  if (!import.meta.env.DEV) return
+  const parsed = new URL(url)
+  console.info('[Dominator] fetch answers page', {
+    targetUserId,
+    page,
+    maxPages,
+    offset: parsed.searchParams.get('offset'),
+    limit: parsed.searchParams.get('limit'),
+    loadedCount,
+  })
 }
 
 function getEffectiveMaxPages<T>(configuredMaxPages: number, response: ZhihuApiResponse<T>): number {
